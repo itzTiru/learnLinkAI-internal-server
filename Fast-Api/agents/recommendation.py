@@ -6,7 +6,7 @@ def recommend(ranked: List[Dict[str, Any]], top_k: int = 10, per_platform_limit:
     out = []
     for item in ranked:
         url = item.get("url")
-        plat = item.get("platform","unknown")
+        plat = item.get("platform", "unknown")
         if url in seen:
             continue
         if counts.get(plat, 0) >= per_platform_limit:

@@ -1,12 +1,9 @@
 from typing import List, Dict, Any
 from sentence_transformers.util import cos_sim
-from sentence_transformers import SentenceTransformer
+from embeddings import get_embedding_model
 
-
-# Shared embedding model instance
-embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-
-
+# Shared embedding model
+embedder = get_embedding_model()
 
 def rank_results(query: str, items: List[Dict[str, Any]], top_k: int = 10) -> List[Dict[str, Any]]:
     """
@@ -20,7 +17,7 @@ def rank_results(query: str, items: List[Dict[str, Any]], top_k: int = 10) -> Li
     texts = [i.get("title", "") + " " + i.get("description", "") + " " + i.get("summary", "") for i in items]
     doc_embs = embedder.encode(texts, convert_to_tensor=True)
 
-    # Cosine similarity (using sentence-transformers)
+    # Cosine similarity
     sims = cos_sim(query_emb, doc_embs)[0].cpu().tolist()
 
     # Attach scores
@@ -29,5 +26,4 @@ def rank_results(query: str, items: List[Dict[str, Any]], top_k: int = 10) -> Li
 
     # Sort by similarity
     ranked = sorted(items, key=lambda x: x["similarity_score"], reverse=True)
-
     return ranked[:top_k]

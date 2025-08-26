@@ -2,9 +2,7 @@ from sqlalchemy import create_engine, Column, Integer, String, Text, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-# -----------------------------
 # SQLite database
-# -----------------------------
 SQLALCHEMY_DATABASE_URL = "sqlite:///./content.db"
 
 engine = create_engine(
@@ -14,10 +12,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
 
-
-# -----------------------------
 # ORM Model
-# -----------------------------
 class Content(Base):
     __tablename__ = "contents"
 
@@ -27,12 +22,10 @@ class Content(Base):
     description = Column(Text, nullable=True)
     url = Column(String, unique=True, nullable=False, index=True)
     thumbnail = Column(String, nullable=True)
-    embedding = Column(JSON, nullable=True)      # store embedding as JSON list of floats
+    summary = Column(Text, nullable=True)        # Added for agent-based summarization
+    embedding = Column(JSON, nullable=True)      # Store embedding as JSON list of floats
 
-
-# -----------------------------
 # Dependency
-# -----------------------------
 def get_db():
     db = SessionLocal()
     try:
@@ -40,8 +33,5 @@ def get_db():
     finally:
         db.close()
 
-
-# -----------------------------
 # Create tables
-# -----------------------------
 Base.metadata.create_all(bind=engine)

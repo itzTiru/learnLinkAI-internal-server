@@ -6,7 +6,7 @@ import os
 import asyncio
 import httpx
 from dotenv import load_dotenv
-
+import json
 from sqlalchemy.orm import Session
 from database import get_db, Content
 
@@ -36,6 +36,7 @@ app.add_middleware(
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not YOUTUBE_API_KEY or not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
     raise RuntimeError("Missing one or more API keys in .env (YOUTUBE_API_KEY, GOOGLE_API_KEY, GOOGLE_CSE_ID).")
 
@@ -247,3 +248,84 @@ async def search_content(payload: SearchQuery, db: Session = Depends(get_db)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search error: {e}")
+    
+
+
+
+# ---------------------------
+# Gemini API Wrapper
+# ---------------------------
+async def fetch_gemini_answers(query: str) -> list:
+    try:
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent"
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY
+        }
+        prompt = f"""
+        You are an educational assistant. 
+        Provide 6 concise, clear, and helpful answers to this query: "{query}"
+
+        Each answer should:
+        - Be short (2–3 sentences max)
+        - End with a reliable reference link (Wikipedia, .edu, official docs, etc.)
+        Format as:
+        1. Answer — Reference: [URL]
+        """
+
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}]
+        }
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(url, headers=headers, content=json.dumps(payload))
+            resp.raise_for_status()
+            data = resp.json()
+
+        text_response = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+
+        # Split into multiple answers
+        answers = []
+        for line in text_response.split("\n"):
+            if line.strip() and (line[0].isdigit() or line.startswith("-")):
+                parts = line.split("— Reference:")
+                if len(parts) == 2:
+                    answer_text = parts[0].strip("1234567890.- ")
+                    ref_link = parts[1].strip()
+                    answers.append({"answer": answer_text, "reference": ref_link})
+                else:
+                    answers.append({"answer": line.strip(), "reference": None})
+
+        return answers[:6]
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gemini fetch error: {e}")
+
+
+# ---------------------------
+# AI Info Endpoint
+# ---------------------------
+@app.post("/aiinfo")
+async def ai_info(payload: SearchQuery):
+    try:
+        answers = await fetch_gemini_answers(payload.query)
+
+        results = []
+        for ans in answers:
+            ref =ans.get("reference","")
+            if ref:
+                ref = ref.strip("[]") 
+                if ref.startswith("https:/") and not ref.startswith("https://"):
+                    ref = ref.replace("https:/", "https://", 1)
+            results.append({
+                "platform": "ai",
+                "title": ans["answer"],
+                "description": ans["answer"],
+                "url": ans["reference"],
+                "thumbnail": None
+            })
+
+        return {"query": payload.query, "results": results}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI Info error: {e}")

@@ -9,7 +9,6 @@ from dotenv import load_dotenv
 import json
 from sqlalchemy.orm import Session
 from database import get_db, Content
-
 from googleapiclient.discovery import build
 
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -264,7 +263,7 @@ async def fetch_gemini_answers(query: str) -> list:
         }
         prompt = f"""
         You are an educational assistant. 
-        Provide 6 concise, clear, and helpful answers to this query: "{query}"
+        Provide 9 concise, clear, and helpful answers to this query: "{query}"
 
         Each answer should:
         - Be short (2–3 sentences max)
@@ -296,7 +295,7 @@ async def fetch_gemini_answers(query: str) -> list:
                 else:
                     answers.append({"answer": line.strip(), "reference": None})
 
-        return answers[:6]
+        return answers[:9]
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gemini fetch error: {e}")
@@ -329,3 +328,11 @@ async def ai_info(payload: SearchQuery):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI Info error: {e}")
+
+
+#-----------------
+#personal endpoint
+#-----------------
+from personal_mongo import router as personal_router
+
+app.include_router(personal_router)

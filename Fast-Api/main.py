@@ -16,14 +16,12 @@ from googleapiclient.discovery import build
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from sentence_transformers.util import cos_sim
 
-# ---------------------------
-# Setup
-# ---------------------------
+
 load_dotenv()
 
 app = FastAPI(title="Educational Content Recommender")
 
-# CORS
+#CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "*"],
@@ -33,10 +31,10 @@ app.add_middleware(
 )
 
 # API Keys
-YOUTUBE_API_KEY = "AIzaSyAx4IotSnZZk48ltwySqEP_NIZYinJmIoI"
-GOOGLE_API_KEY = "AIzaSyAxnuFb1aAjOIm2ZH9ZGa8SXYr14xtNj2s"
-GOOGLE_CSE_ID = "56a788a3af2f04076"
-GEMINI_API_KEY = "AIzaSyC9Lump7xrSbboPYpHlP-zQy_up6DjS43w"
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ASSEMBLY_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 
 # API URLs
@@ -50,9 +48,6 @@ embedding_model = HuggingFaceEmbeddings(
 
 # ---------------------------
 # Utility Functions
-# ---------------------------
-
-
 def clean_text(text: str) -> str:
     """Normalize & clean input text for better embeddings & search"""
     if not text:
@@ -64,9 +59,6 @@ def clean_text(text: str) -> str:
 
 # ---------------------------
 # Models
-# ---------------------------
-
-
 class SearchQuery(BaseModel):
     query: str
     max_results: int = 5
@@ -74,8 +66,6 @@ class SearchQuery(BaseModel):
 
 # ---------------------------
 # External Fetchers
-# ---------------------------
-
 
 async def fetch_youtube_videos(query: str, max_results: int):
     try:
@@ -153,11 +143,8 @@ async def fetch_gemini_answers(query: str):
         print("Gemini API error:", e)
         return []
 
-# ---------------------------
+
 # Ranking
-# ---------------------------
-
-
 def rank_by_similarity(query: str, results: List[dict]) -> List[dict]:
     try:
         query_emb = embedding_model.embed_query(query)
@@ -174,8 +161,6 @@ def rank_by_similarity(query: str, results: List[dict]) -> List[dict]:
 
 # ---------------------------
 # Routes
-# ---------------------------
-
 
 @app.post("/search")
 async def search_content(payload: SearchQuery, db: Session = Depends(get_db)):
@@ -227,21 +212,67 @@ async def search_content(payload: SearchQuery, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Search error: {e}")
 
 
+
+# Gemini API Wrapper
+async def fetch_gemini_answers(query: str) -> list:
+    try:
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite-preview-09-2025:generateContent"
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY
+        }
+
+        prompt = f"""
+        You are an educational assistant. 
+        Provide 6 concise, clear, and helpful answers to this query: "{query}"
+
+        Each answer should:
+        - Be short (2–3 sentences max)
+        - End with a reliable reference link (Wikipedia, .edu, official docs, etc.)
+        Format as:
+        1. Answer — Reference: [URL]
+        """
+
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}]
+        }
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(url, headers=headers, json=payload)  # use 'json=payload'
+            resp.raise_for_status()
+            data = resp.json()
+
+        text_response = data.get("candidates", [{}])[0].get(
+            "content", {}).get("parts", [{}])[0].get("text", "")
+
+        # Split into multiple answers
+        answers = []
+        for line in text_response.split("\n"):
+            if line.strip() and (line[0].isdigit() or line.startswith("-")):
+                parts = line.split("— Reference:")
+                if len(parts) == 2:
+                    answer_text = parts[0].strip("1234567890.- ")
+                    ref_link = parts[1].strip()
+                    answers.append({"answer": answer_text, "reference": ref_link})
+                else:
+                    answers.append({"answer": line.strip(), "reference": None})
+
+        return answers[:6]
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gemini fetch error: {e}")
+
+
 @app.post("/aiinfo")
 async def ai_info(payload: SearchQuery):
     try:
-        query_clean = clean_text(payload.query)
-        if not query_clean:
-            return {"query": payload.query, "results": []}
+        answers = await fetch_gemini_answers(payload.query)
 
-        answers = await fetch_gemini_answers(query_clean)
         results = []
         for ans in answers:
-            ref = ans.get("reference", "")
-            if ref:
-                ref = ref.strip("[]")
-                if ref.startswith("https:/") and not ref.startswith("https://"):
-                    ref = ref.replace("https:/", "https://", 1)
+            ref = ans.get("reference")
+            if ref and ref.startswith("https:/") and not ref.startswith("https://"):
+                ref = ref.replace("https:/", "https://", 1)
             results.append({
                 "platform": "ai",
                 "title": ans["answer"],
@@ -249,9 +280,14 @@ async def ai_info(payload: SearchQuery):
                 "url": ref,
                 "thumbnail": None
             })
+
         return {"query": payload.query, "results": results}
+
     except Exception as e:
+        import traceback
+        traceback.print_exc() 
         raise HTTPException(status_code=500, detail=f"AI Info error: {e}")
+
 
 
 @app.post("/transcribe")

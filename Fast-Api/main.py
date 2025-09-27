@@ -505,6 +505,58 @@ async def generate_questions(content: str = Body(..., embed=True)):
         raise HTTPException(status_code=500, detail=f"Question generation error: {e}")
 
 
+import random
+
+@app.post("/generate-mcq")
+async def generate_mcq(content: str = Body(..., embed=True)):
+    """
+    Generate 7-10 MCQ questions from the provided PDF content.
+    Each MCQ has a question, 4 options, and the correct answer.
+    """
+    if not content or not content.strip():
+        raise HTTPException(status_code=400, detail="No content provided.")
+
+    try:
+        # Split content into chunks for diversity
+        num_questions = max(7, min(10, len(content) // 100))
+        chunk_size = max(50, len(content) // num_questions)
+        questions = []
+        for i in range(0, len(content), chunk_size):
+            snippet = content[i:i+chunk_size].strip()
+            if snippet:
+                # Simple MCQ template (for demo)
+                question = f"What is a key point from: '{snippet[:60]}...'"
+                correct = f"{snippet[:30]}..."
+                # Generate 3 random incorrect options (for demo, just shuffle words)
+                words = snippet.split()
+                random.shuffle(words)
+                wrong1 = " ".join(words[:5]) + "..."
+                random.shuffle(words)
+                wrong2 = " ".join(words[5:10]) + "..."
+                random.shuffle(words)
+                wrong3 = " ".join(words[10:15]) + "..."
+                options = [correct, wrong1, wrong2, wrong3]
+                random.shuffle(options)
+                questions.append({
+                    "question": question,
+                    "options": options,
+                    "answer": correct
+                })
+                if len(questions) >= 10:
+                    break
+        # Pad if less than 7
+        while len(questions) < 7:
+            questions.append({
+                "question": "What is the main topic covered in this PDF?",
+                "options": ["Topic A", "Topic B", "Topic C", "Topic D"],
+                "answer": "Topic A"
+            })
+
+        return {"mcqs": questions[:10]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"MCQ generation error: {e}")
+
+
 def split_by_topics(text: str) -> list:
     """
     Improved topic splitter: detects headers as lines in ALL CAPS or surrounded by blank lines.

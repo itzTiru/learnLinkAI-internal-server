@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
@@ -332,6 +332,7 @@ async def ai_info(payload: SearchQuery):
 
         results = []
         for ans in answers:
+            ref = ans["reference"]
             if ref:
                 if ref.startswith("https:/") and not ref.startswith("https://"):
                     ref = ref.replace("https:/", "https://", 1)
@@ -413,11 +414,17 @@ async def root():
 summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
 qa_model = pipeline("question-answering", model="distilbert-base-uncased-distilled-squad")
 
+# Load question generation pipeline (if available)
+try:
+    qg_model = pipeline("question-generation", model="valhalla/t5-base-qa-qg-hl")
+except Exception:
+    qg_model = None  # fallback if not available
+
 #upload pdf endpoint
 @app.post("/upload-pdf")
 async def upload_pdf(file: UploadFile = File(...)):
     """
-    Upload PDF, extract text, summarize, return summary and full text.
+    Upload PDF, extract text, summarize topic-wise, return summary and full text.
     """
     text = ""
     try:
@@ -431,17 +438,96 @@ async def upload_pdf(file: UploadFile = File(...)):
         if not text.strip():
             raise HTTPException(status_code=400, detail="PDF contains no extractable text.")
 
-        # Summarize the text
-        max_chunk = 800  # Hugging Face models have input limit
-        chunks = [text[i:i+max_chunk] for i in range(0, len(text), max_chunk)]
-        summary = ""
-        for chunk in chunks:
+        # Split by topics
+        sections = split_by_topics(text)
+        topic_summaries = []
+        for topic, section_text in sections:
+            # Summarize each section (limit chunk size for model)
+            chunk = section_text[:800]
             summ = summarizer(chunk, max_length=60, min_length=20, do_sample=False)[0]['summary_text']
-            summary += summ + " "
+            topic_summaries.append(f"**{topic}**\n{summ}\n")
 
-        summary = summary.strip()
+        summary = "\n\n".join(topic_summaries).strip()
 
         return {"content": text, "summary": summary}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing PDF: {e}")
+
+
+@app.post("/generate-questions")
+async def generate_questions(content: str = Body(..., embed=True)):
+    """
+    Generate 7-10 diverse questions from the provided PDF content.
+    """
+    if not content or not content.strip():
+        raise HTTPException(status_code=400, detail="No content provided.")
+
+    try:
+        questions = []
+        if qg_model:
+            # Use the question generation model if available
+            max_chunk = 512
+            chunks = [content[i:i+max_chunk] for i in range(0, len(content), max_chunk)]
+            for chunk in chunks:
+                q_list = qg_model(chunk)
+                for q in q_list:
+                    if "question" in q:
+                        questions.append(q["question"])
+                    elif isinstance(q, str):
+                        questions.append(q)
+                    if len(questions) >= 10:
+                        break
+                if len(questions) >= 10:
+                    break
+        else:
+            # Fallback: generate diverse questions from different content chunks
+            num_questions = max(7, min(10, len(content) // 100))
+            chunk_size = max(50, len(content) // num_questions)
+            for i in range(0, len(content), chunk_size):
+                snippet = content[i:i+chunk_size].strip()
+                if snippet:
+                    # Use different question templates for diversity
+                    if len(questions) % 3 == 0:
+                        questions.append(f"What is explained in this section: '{snippet[:60]}...'?")
+                    elif len(questions) % 3 == 1:
+                        questions.append(f"Summarize the main idea of: '{snippet[:60]}...'.")
+                    else:
+                        questions.append(f"List key points from: '{snippet[:60]}...'.")
+                    if len(questions) >= 10:
+                        break
+            # Pad if less than 7
+            while len(questions) < 7:
+                questions.append("What are the main topics covered in this PDF?")
+
+        return {"questions": questions[:10]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Question generation error: {e}")
+
+
+def split_by_topics(text: str) -> list:
+    """
+    Improved topic splitter: detects headers as lines in ALL CAPS or surrounded by blank lines.
+    Returns a list of (topic, section_text).
+    """
+    lines = text.splitlines()
+    sections = []
+    current_topic = None
+    current_section = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        # Detect topic: all caps and longer than 3 chars, or surrounded by blank lines
+        is_topic = (
+            (stripped.isupper() and len(stripped) > 3) or
+            (stripped and (i == 0 or not lines[i-1].strip()) and (i+1 == len(lines) or not lines[i+1].strip()))
+        )
+        if is_topic:
+            if current_topic and current_section:
+                sections.append((current_topic, "\n".join(current_section).strip()))
+                current_section = []
+            current_topic = stripped
+        else:
+            current_section.append(line)
+    if current_topic and current_section:
+        sections.append((current_topic, "\n".join(current_section).strip()))
+    return sections

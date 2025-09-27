@@ -307,7 +307,8 @@ async def fetch_gemini_answers(query: str) -> list:
                 if len(parts) == 2:
                     answer_text = parts[0].strip("1234567890.- ")
                     ref_link = parts[1].strip()
-                    answers.append({"answer": answer_text, "reference": ref_link})
+                    answers.append(
+                        {"answer": answer_text, "reference": ref_link})
                 else:
                     answers.append({"answer": line.strip(), "reference": None})
 
@@ -327,7 +328,9 @@ async def ai_info(payload: SearchQuery):
 
         results = []
         for ans in answers:
+            ref = ans.get("reference", "")
             if ref:
+                ref = ref.strip("[]")
                 if ref.startswith("https:/") and not ref.startswith("https://"):
                     ref = ref.replace("https:/", "https://", 1)
             results.append({

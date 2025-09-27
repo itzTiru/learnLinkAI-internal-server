@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
@@ -10,6 +10,8 @@ import json
 from sqlalchemy.orm import Session
 from database import get_db, Content
 from fastapi import File, UploadFile
+import pdfplumber
+from transformers import pipeline
 
 from googleapiclient.discovery import build
 
@@ -38,10 +40,13 @@ YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 ASSEMBLY_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 ASSEMBLY_UPLOAD_URL = "https://api.assemblyai.com/v2/upload"
 ASSEMBLY_TRANSCRIPT_URL = "https://api.assemblyai.com/v2/transcript"
+
+
 
 if not YOUTUBE_API_KEY or not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
     raise RuntimeError(
@@ -392,3 +397,51 @@ async def transcribe_audio(file: UploadFile = File(...)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+
+from auth import router as auth_router
+
+app.include_router(auth_router)
+
+@app.get("/")
+async def root():
+    return {"message": "FastAPI Auth System is running"}
+
+
+# Load summarization model once
+summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+qa_model = pipeline("question-answering", model="distilbert-base-uncased-distilled-squad")
+
+#upload pdf endpoint
+@app.post("/upload-pdf")
+async def upload_pdf(file: UploadFile = File(...)):
+    """
+    Upload PDF, extract text, summarize, return summary and full text.
+    """
+    text = ""
+    try:
+        # Extract text from PDF
+        with pdfplumber.open(file.file) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="PDF contains no extractable text.")
+
+        # Summarize the text
+        max_chunk = 800  # Hugging Face models have input limit
+        chunks = [text[i:i+max_chunk] for i in range(0, len(text), max_chunk)]
+        summary = ""
+        for chunk in chunks:
+            summ = summarizer(chunk, max_length=60, min_length=20, do_sample=False)[0]['summary_text']
+            summary += summ + " "
+
+        summary = summary.strip()
+
+        return {"content": text, "summary": summary}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing PDF: {e}")

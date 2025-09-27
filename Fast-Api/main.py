@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import json
 from sqlalchemy.orm import Session
 from database import get_db, Content
+from fastapi import File, UploadFile
 
 from googleapiclient.discovery import build
 
@@ -37,8 +38,14 @@ YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+ASSEMBLY_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
+ASSEMBLY_UPLOAD_URL = "https://api.assemblyai.com/v2/upload"
+ASSEMBLY_TRANSCRIPT_URL = "https://api.assemblyai.com/v2/transcript"
+
 if not YOUTUBE_API_KEY or not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
-    raise RuntimeError("Missing one or more API keys in .env (YOUTUBE_API_KEY, GOOGLE_API_KEY, GOOGLE_CSE_ID).")
+    raise RuntimeError(
+        "Missing one or more API keys in .env (YOUTUBE_API_KEY, GOOGLE_API_KEY, GOOGLE_CSE_ID).")
 
 # YouTube API client (build once)
 youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
@@ -46,11 +53,14 @@ youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 # Embeddings (load once; langchain wrapper over sentence-transformers)
 # NOTE: If you want even faster cold-starts, set model_kwargs={"device": "cpu"} explicitly,
 # or "cuda" if you have a GPU: model_kwargs={"device": "cuda"}
-embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+embedding_model = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-MiniLM-L6-v2")
 
 # ---------------------------
 # Models
 # ---------------------------
+
+
 class SearchQuery(BaseModel):
     query: str
     max_results: int = 5
@@ -118,9 +128,11 @@ async def fetch_google_web(query: str, max_results: int) -> List[dict]:
         ]
     except httpx.HTTPStatusError as e:
         # Bubble up the actual Google error body to help debugging keys / CSE config
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+        raise HTTPException(
+            status_code=e.response.status_code, detail=e.response.text)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Google Web Search error: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Google Web Search error: {e}")
 
 
 # ---------------------------
@@ -152,7 +164,8 @@ def rank_by_similarity(query_text: str, items: List[dict]) -> List[dict]:
     if not items:
         return []
 
-    texts = [f"{it.get('title','')} {it.get('description','')}".strip() for it in items]
+    texts = [f"{it.get('title', '')} {it.get('description', '')}".strip()
+             for it in items]
     doc_embs = batch_embed_texts(texts)  # (N, D)
     query_emb = embed_query(query_text)  # (1, D)
 
@@ -187,12 +200,14 @@ async def search_content(payload: SearchQuery, db: Session = Depends(get_db)):
     try:
         tasks = []
         if "youtube" in payload.platforms:
-            tasks.append(fetch_youtube_videos(payload.query, payload.max_results))
+            tasks.append(fetch_youtube_videos(
+                payload.query, payload.max_results))
         if "web" in payload.platforms:
             tasks.append(fetch_google_web(payload.query, payload.max_results))
 
         results_lists = await asyncio.gather(*tasks) if tasks else []
-        results: List[dict] = [item for lst in results_lists for item in (lst or [])]
+        results: List[dict] = [
+            item for lst in results_lists for item in (lst or [])]
 
         if not results:
             return {
@@ -213,8 +228,9 @@ async def search_content(payload: SearchQuery, db: Session = Depends(get_db)):
             if it["url"] in existing_urls:
                 continue
             # Store the *same* text we embedded above for consistency; recompute quickly here
-            text = f"{it.get('title','')} {it.get('description','')}".strip()
-            emb = embedding_model.embed_query(text)  # single vector is OK for few new rows
+            text = f"{it.get('title', '')} {it.get('description', '')}".strip()
+            # single vector is OK for few new rows
+            emb = embedding_model.embed_query(text)
             to_add.append(Content(
                 platform=it.get("platform"),
                 title=it.get("title"),
@@ -248,8 +264,6 @@ async def search_content(payload: SearchQuery, db: Session = Depends(get_db)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search error: {e}")
-    
-
 
 
 # ---------------------------
@@ -282,7 +296,8 @@ async def fetch_gemini_answers(query: str) -> list:
             resp.raise_for_status()
             data = resp.json()
 
-        text_response = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+        text_response = data.get("candidates", [{}])[0].get(
+            "content", {}).get("parts", [{}])[0].get("text", "")
 
         # Split into multiple answers
         answers = []
@@ -312,9 +327,7 @@ async def ai_info(payload: SearchQuery):
 
         results = []
         for ans in answers:
-            ref =ans.get("reference","")
             if ref:
-                ref = ref.strip("[]") 
                 if ref.startswith("https:/") and not ref.startswith("https://"):
                     ref = ref.replace("https:/", "https://", 1)
             results.append({
@@ -329,3 +342,53 @@ async def ai_info(payload: SearchQuery):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI Info error: {e}")
+
+
+# ---------------------------
+# Assembly Voice Transcription
+# ---------------------------
+@app.post("/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
+    import httpx
+    import asyncio
+
+    try:
+        # Read audio bytes
+        audio_bytes = await file.read()
+
+        async with httpx.AsyncClient() as client:
+            # Upload audio to AssemblyAI
+            upload_resp = await client.post(
+                ASSEMBLY_UPLOAD_URL,
+                headers={"authorization": ASSEMBLY_API_KEY},
+                content=audio_bytes
+            )
+            upload_resp.raise_for_status()
+            audio_url = upload_resp.json()["upload_url"]
+
+            # Request transcription
+            transcript_resp = await client.post(
+                ASSEMBLY_TRANSCRIPT_URL,
+                headers={"authorization": ASSEMBLY_API_KEY},
+                json={"audio_url": audio_url}
+            )
+            transcript_resp.raise_for_status()
+            transcript_id = transcript_resp.json()["id"]
+
+            # Poll until transcription is done
+            while True:
+                poll_resp = await client.get(
+                    f"{ASSEMBLY_TRANSCRIPT_URL}/{transcript_id}",
+                    headers={"authorization": ASSEMBLY_API_KEY}
+                )
+                poll_resp.raise_for_status()
+                data = poll_resp.json()
+                if data["status"] == "completed":
+                    return {"text": data["text"]}
+                elif data["status"] == "failed":
+                    raise HTTPException(
+                        status_code=500, detail="Transcription failed")
+                await asyncio.sleep(2)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

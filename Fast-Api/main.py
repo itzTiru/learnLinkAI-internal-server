@@ -19,6 +19,12 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 import torch
 from sentence_transformers.util import cos_sim
 
+
+# from shcema import UserCreate, UserLogin, Token
+# from db import users_collection
+# from auth import hash_password, verify_password, create_access_token
+# from jose import jwt, JWTError
+
 # ---------------------------
 # Bootstrapping & globals
 # ---------------------------
@@ -34,6 +40,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # API keys
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
@@ -401,185 +408,272 @@ async def transcribe_audio(file: UploadFile = File(...)):
 
 
 
-from auth import router as auth_router
+# # -------------------------------
+# # Signup endpoint
+# # -------------------------------
+# @app.post("/signup", response_model=Token)
+# async def signup(user: UserCreate):
+#     # Check if user exists
+#     if users_collection.find_one({"email": user.email}):
+#         raise HTTPException(status_code=400, detail="Email already registered")
 
-app.include_router(auth_router)
+#     hashed_pwd = hash_password(user.password)
+#     users_collection.insert_one({"email": user.email, "password": hashed_pwd})
 
-@app.get("/")
-async def root():
-    return {"message": "FastAPI Auth System is running"}
+#     access_token = create_access_token({"sub": user.email})
+#     return {"access_token": access_token, "token_type": "bearer"}
+
+# # -------------------------------
+# # Login endpoint
+# # -------------------------------
+# @app.post("/login", response_model=Token)
+# async def login(user: UserLogin):
+#     db_user = users_collection.find_one({"email": user.email})
+#     if not db_user:
+#         raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+#     if not verify_password(user.password, db_user["password"]):
+#         raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+#     access_token = create_access_token({"sub": user.email})
+#     return {"access_token": access_token, "token_type": "bearer"}
 
 
-# Load summarization model once
-summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
-qa_model = pipeline("question-answering", model="distilbert-base-uncased-distilled-squad")
 
-# Load question generation pipeline (if available)
-try:
-    qg_model = pipeline("question-generation", model="valhalla/t5-base-qa-qg-hl")
-except Exception:
-    qg_model = None  # fallback if not available
+# # Load summarization model once
+# summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+# qa_model = pipeline("question-answering", model="distilbert-base-uncased-distilled-squad")
 
-#upload pdf endpoint
-@app.post("/upload-pdf")
+# # Load question generation pipeline (if available)
+# try:
+#     qg_model = pipeline("question-generation", model="valhalla/t5-base-qa-qg-hl")
+# except Exception:
+#     qg_model = None  # fallback if not available
+
+# # Improved topic splitter
+# def split_by_topics(text: str) -> list:
+#     """
+#     Detects headers as lines in ALL CAPS or surrounded by blank lines.
+#     Returns a list of (topic, section_text).
+#     Always returns at least one section.
+#     """
+#     lines = text.splitlines()
+#     sections = []
+#     current_topic = None
+#     current_section = []
+
+#     for i, line in enumerate(lines):
+#         stripped = line.strip()
+#         # Detect topic: all caps and longer than 3 chars, or surrounded by blank lines
+#         is_topic = (
+#             (stripped.isupper() and len(stripped) > 3) or
+#             (stripped and (i == 0 or not lines[i-1].strip()) and (i+1 == len(lines) or not lines[i+1].strip()))
+#         )
+
+#         if is_topic:
+#             if current_topic:
+#                 # Append previous topic (even if empty)
+#                 sections.append((current_topic, "\n".join(current_section).strip() if current_section else ""))
+#             current_topic = stripped
+#             current_section = []
+#         else:
+#             current_section.append(line)
+
+#     # Append last topic
+#     if current_topic:
+#         sections.append((current_topic, "\n".join(current_section).strip() if current_section else ""))
+
+#     return sections
+
+# # Upload PDF endpoint
+# @app.post("/upload-pdf")
+# async def upload_pdf(file: UploadFile = File(...)):
+#     """
+#     Upload PDF, extract text, summarize topic-wise, return summary and full text.
+#     Handles single-topic PDFs properly.
+#     """
+#     text = ""
+#     try:
+#         # Extract text from PDF
+#         with pdfplumber.open(file.file) as pdf:
+#             for page in pdf.pages:
+#                 page_text = page.extract_text()
+#                 if page_text:
+#                     text += page_text + "\n"
+
+#         if not text.strip():
+#             raise HTTPException(status_code=400, detail="PDF contains no extractable text.")
+
+#         # Split by topics
+#         sections = split_by_topics(text)
+
+#         # Handle PDFs with no clear topic
+#         if not sections:
+#             sections = [("MAIN TOPIC", text)]
+
+#         # Summarize each section
+#         topic_summaries = []
+#         for topic, section_text in sections:
+#             # Limit chunk size for model
+#             chunk = section_text[:800] if section_text else ""
+#             if chunk:
+#                 summ = summarizer(chunk, max_length=60, min_length=20, do_sample=False)[0]['summary_text']
+#             else:
+#                 summ = "No content available to summarize."
+#             topic_summaries.append(f"**{topic}**\n{summ}\n")
+
+#         summary = "\n\n".join(topic_summaries).strip()
+
+#         return {"content": text, "summary": summary}
+
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Error processing PDF: {e}")
+    
+# import random
+
+
+# # ---------------------------
+# # Generate questions
+# # ---------------------------
+# @app.post("/generate-questions")
+# async def generate_questions(content: str = Body(..., embed=True)):
+#     """
+#     Generate 7-10 diverse questions from the provided PDF content.
+#     """
+#     if not content or not content.strip():
+#         raise HTTPException(status_code=400, detail="No content provided.")
+
+#     try:
+#         questions = []
+
+#         # Use question generation model if available
+#         if qg_model:
+#             max_chunk = 512
+#             chunks = [content[i:i + max_chunk] for i in range(0, len(content), max_chunk)]
+#             for chunk in chunks:
+#                 q_list = qg_model(chunk)
+#                 for q in q_list:
+#                     if isinstance(q, dict) and "question" in q:
+#                         questions.append(q["question"])
+#                     elif isinstance(q, str):
+#                         questions.append(q)
+#                     if len(questions) >= 10:
+#                         break
+#                 if len(questions) >= 10:
+#                     break
+#         else:
+#             # Fallback: simple heuristic question generation
+#             num_questions = max(7, min(10, len(content) // 100))
+#             chunk_size = max(50, len(content) // num_questions)
+#             for i in range(0, len(content), chunk_size):
+#                 snippet = content[i:i + chunk_size].strip()
+#                 if not snippet:
+#                     continue
+#                 if len(questions) % 3 == 0:
+#                     questions.append(f"What is explained in this section: '{snippet[:60]}...'?")
+#                 elif len(questions) % 3 == 1:
+#                     questions.append(f"Summarize the main idea of: '{snippet[:60]}...'.")
+#                 else:
+#                     questions.append(f"List key points from: '{snippet[:60]}...'.")
+#                 if len(questions) >= 10:
+#                     break
+
+#             # Pad if less than 7
+#             while len(questions) < 7:
+#                 questions.append("What are the main topics covered in this PDF?")
+
+#         return {"questions": questions[:10]}
+
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Question generation error: {e}")
+
+
+# # ---------------------------
+# # Generate MCQs
+# # ---------------------------
+# @app.post("/generate-mcq")
+# async def generate_mcq(content: str = Body(..., embed=True)):
+#     """
+#     Generate 7-10 MCQ questions from the provided PDF content.
+#     Each MCQ has a question, 4 options, and the correct answer.
+#     """
+#     if not content or not content.strip():
+#         raise HTTPException(status_code=400, detail="No content provided.")
+
+#     try:
+#         num_questions = max(7, min(10, len(content) // 100))
+#         chunk_size = max(50, len(content) // num_questions)
+#         mcqs = []
+
+#         for i in range(0, len(content), chunk_size):
+#             snippet = content[i:i + chunk_size].strip()
+#             if not snippet:
+#                 continue
+
+#             question = f"What is a key point from: '{snippet[:60]}...'"
+#             correct = snippet[:30] + "..."
+#             words = snippet.split()
+#             random.shuffle(words)
+#             wrong1 = " ".join(words[:5]) + "..." if len(words) >= 5 else correct
+#             random.shuffle(words)
+#             wrong2 = " ".join(words[5:10]) + "..." if len(words) >= 10 else correct
+#             random.shuffle(words)
+#             wrong3 = " ".join(words[10:15]) + "..." if len(words) >= 15 else correct
+
+#             options = [correct, wrong1, wrong2, wrong3]
+#             random.shuffle(options)
+
+#             mcqs.append({
+#                 "question": question,
+#                 "options": options,
+#                 "answer": correct
+#             })
+
+#             if len(mcqs) >= 10:
+#                 break
+
+#         # Pad if less than 7
+#         while len(mcqs) < 7:
+#             mcqs.append({
+#                 "question": "What is the main topic covered in this PDF?",
+#                 "options": ["Topic A", "Topic B", "Topic C", "Topic D"],
+#                 "answer": "Topic A"
+#             })
+
+#         return {"mcqs": mcqs[:10]}
+
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"MCQ generation error: {e}")
+    
+
+    #-------------------------------------------------------------------------
+from fastapi import FastAPI, UploadFile, File
+import os
+from pdf_utils import extract_text_from_pdf
+from agents.pdf_query import analyze_pdf_text, parse_analysis
+
+@app.post("/upload-pdf/")
 async def upload_pdf(file: UploadFile = File(...)):
-    """
-    Upload PDF, extract text, summarize topic-wise, return summary and full text.
-    """
-    text = ""
+    
+    temp_path = f"temp_{file.filename}"
     try:
-        # Extract text from PDF
-        with pdfplumber.open(file.file) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
+        content = await file.read()
+        with open(temp_path, "wb") as f:
+            f.write(content)
 
-        if not text.strip():
-            raise HTTPException(status_code=400, detail="PDF contains no extractable text.")
+        text = extract_text_from_pdf(temp_path)
+        print("Extracted text:", text[:200])  # Print first 200 chars
 
-        # Split by topics
-        sections = split_by_topics(text)
-        topic_summaries = []
-        for topic, section_text in sections:
-            # Summarize each section (limit chunk size for model)
-            chunk = section_text[:800]
-            summ = summarizer(chunk, max_length=60, min_length=20, do_sample=False)[0]['summary_text']
-            topic_summaries.append(f"**{topic}**\n{summ}\n")
+        analysis = analyze_pdf_text(text)
+        print("Gemini analysis:", analysis)
 
-        summary = "\n\n".join(topic_summaries).strip()
+        result = parse_analysis(analysis)
+        print("Parsed result:", result)
 
-        return {"content": text, "summary": summary}
-
+        return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing PDF: {e}")
-
-
-@app.post("/generate-questions")
-async def generate_questions(content: str = Body(..., embed=True)):
-    """
-    Generate 7-10 diverse questions from the provided PDF content.
-    """
-    if not content or not content.strip():
-        raise HTTPException(status_code=400, detail="No content provided.")
-
-    try:
-        questions = []
-        if qg_model:
-            # Use the question generation model if available
-            max_chunk = 512
-            chunks = [content[i:i+max_chunk] for i in range(0, len(content), max_chunk)]
-            for chunk in chunks:
-                q_list = qg_model(chunk)
-                for q in q_list:
-                    if "question" in q:
-                        questions.append(q["question"])
-                    elif isinstance(q, str):
-                        questions.append(q)
-                    if len(questions) >= 10:
-                        break
-                if len(questions) >= 10:
-                    break
-        else:
-            # Fallback: generate diverse questions from different content chunks
-            num_questions = max(7, min(10, len(content) // 100))
-            chunk_size = max(50, len(content) // num_questions)
-            for i in range(0, len(content), chunk_size):
-                snippet = content[i:i+chunk_size].strip()
-                if snippet:
-                    # Use different question templates for diversity
-                    if len(questions) % 3 == 0:
-                        questions.append(f"What is explained in this section: '{snippet[:60]}...'?")
-                    elif len(questions) % 3 == 1:
-                        questions.append(f"Summarize the main idea of: '{snippet[:60]}...'.")
-                    else:
-                        questions.append(f"List key points from: '{snippet[:60]}...'.")
-                    if len(questions) >= 10:
-                        break
-            # Pad if less than 7
-            while len(questions) < 7:
-                questions.append("What are the main topics covered in this PDF?")
-
-        return {"questions": questions[:10]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Question generation error: {e}")
-
-
-import random
-
-@app.post("/generate-mcq")
-async def generate_mcq(content: str = Body(..., embed=True)):
-    """
-    Generate 7-10 MCQ questions from the provided PDF content.
-    Each MCQ has a question, 4 options, and the correct answer.
-    """
-    if not content or not content.strip():
-        raise HTTPException(status_code=400, detail="No content provided.")
-
-    try:
-        # Split content into chunks for diversity
-        num_questions = max(7, min(10, len(content) // 100))
-        chunk_size = max(50, len(content) // num_questions)
-        questions = []
-        for i in range(0, len(content), chunk_size):
-            snippet = content[i:i+chunk_size].strip()
-            if snippet:
-                # Simple MCQ template (for demo)
-                question = f"What is a key point from: '{snippet[:60]}...'"
-                correct = f"{snippet[:30]}..."
-                # Generate 3 random incorrect options (for demo, just shuffle words)
-                words = snippet.split()
-                random.shuffle(words)
-                wrong1 = " ".join(words[:5]) + "..."
-                random.shuffle(words)
-                wrong2 = " ".join(words[5:10]) + "..."
-                random.shuffle(words)
-                wrong3 = " ".join(words[10:15]) + "..."
-                options = [correct, wrong1, wrong2, wrong3]
-                random.shuffle(options)
-                questions.append({
-                    "question": question,
-                    "options": options,
-                    "answer": correct
-                })
-                if len(questions) >= 10:
-                    break
-        # Pad if less than 7
-        while len(questions) < 7:
-            questions.append({
-                "question": "What is the main topic covered in this PDF?",
-                "options": ["Topic A", "Topic B", "Topic C", "Topic D"],
-                "answer": "Topic A"
-            })
-
-        return {"mcqs": questions[:10]}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"MCQ generation error: {e}")
-
-
-def split_by_topics(text: str) -> list:
-    """
-    Improved topic splitter: detects headers as lines in ALL CAPS or surrounded by blank lines.
-    Returns a list of (topic, section_text).
-    """
-    lines = text.splitlines()
-    sections = []
-    current_topic = None
-    current_section = []
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        # Detect topic: all caps and longer than 3 chars, or surrounded by blank lines
-        is_topic = (
-            (stripped.isupper() and len(stripped) > 3) or
-            (stripped and (i == 0 or not lines[i-1].strip()) and (i+1 == len(lines) or not lines[i+1].strip()))
-        )
-        if is_topic:
-            if current_topic and current_section:
-                sections.append((current_topic, "\n".join(current_section).strip()))
-                current_section = []
-            current_topic = stripped
-        else:
-            current_section.append(line)
-    if current_topic and current_section:
-        sections.append((current_topic, "\n".join(current_section).strip()))
-    return sections
+        print("Error in upload_pdf:", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)

@@ -1,12 +1,10 @@
-from motor.motor_asyncio import AsyncIOMotorClient
-from dotenv import load_dotenv
+from pymongo import MongoClient
 import os
+from dotenv import load_dotenv
 
 load_dotenv()
 
-MONGO_URI = os.getenv("MONGODB_URI")
-DB_NAME = os.getenv("DB_NAME")
-
-client = AsyncIOMotorClient(MONGO_URI)
-db = client[DB_NAME]
-users_collection = db["users"]
+MONGO_URI = os.getenv("MONGO_URI")
+client = MongoClient(MONGO_URI)
+db = client["learn0"]  # Database name as shown in the image
+client_collection = db["education.cilent"]  

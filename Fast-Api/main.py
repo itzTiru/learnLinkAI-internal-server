@@ -20,6 +20,7 @@ import torch
 from sentence_transformers.util import cos_sim
 
 
+
 # from shcema import UserCreate, UserLogin, Token
 # from db import users_collection
 # from auth import hash_password, verify_password, create_access_token
@@ -52,6 +53,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ASSEMBLY_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 ASSEMBLY_UPLOAD_URL = "https://api.assemblyai.com/v2/upload"
 ASSEMBLY_TRANSCRIPT_URL = "https://api.assemblyai.com/v2/transcript"
+
+
 
 
 
@@ -654,7 +657,6 @@ from agents.pdf_query import analyze_pdf_text, parse_analysis
 
 @app.post("/upload-pdf/")
 async def upload_pdf(file: UploadFile = File(...)):
-    
     temp_path = f"temp_{file.filename}"
     try:
         content = await file.read()
@@ -662,18 +664,45 @@ async def upload_pdf(file: UploadFile = File(...)):
             f.write(content)
 
         text = extract_text_from_pdf(temp_path)
-        print("Extracted text:", text[:200])  # Print first 200 chars
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="No text found in PDF")
 
-        analysis = analyze_pdf_text(text)
-        print("Gemini analysis:", analysis)
-
-        result = parse_analysis(analysis)
-        print("Parsed result:", result)
-
+        # Analyze large PDF with chunking
+        result = analyze_pdf_text(text)
         return result
+
     except Exception as e:
-        print("Error in upload_pdf:", e)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+
+from google import genai
+
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+class QuestionRequest(BaseModel):
+    text: str
+    question: str
+
+@app.post("/ask-pdf/")
+async def ask_pdf(request: QuestionRequest):
+    """
+    User asks a question about the uploaded PDF.
+    We feed the full text + question into Gemini for contextual answer.
+    """
+    prompt = (
+        "You are a helpful assistant for understanding PDFs.\n"
+        "Answer the question **based only** on the provided document content.\n"
+        "If the answer is not present, say 'The document does not mention this clearly.'\n\n"
+        f"Document Text:\n{request.text[:8000]}\n\n"
+        f"User Question: {request.question}"
+    )
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    )
+    return {"answer": response.text.strip()}
+
+

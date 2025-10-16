@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -145,6 +144,21 @@ async def fetch_gemini_answers(query: str):
         print("Gemini API error:", e)
         return []
 
+# Ranking
+def rank_by_similarity(query: str, results: List[dict]) -> List[dict]:
+    try:
+        query_emb = embedding_model.embed_query(query)
+        contents = [f"{r['title']} {r['description']}" for r in results]
+        doc_embs = embedding_model.embed_documents(contents)
+        sims = [cos_sim(torch.tensor(query_emb), torch.tensor(doc)).item()
+                for doc in doc_embs]
+        for r, s in zip(results, sims):
+            r["similarity"] = s
+        return sorted(results, key=lambda x: x["similarity"], reverse=True)
+    except Exception as e:
+        print("Ranking error:", e)
+        return results
+
 
 # Ranking
 def rank_by_similarity(query: str, results: List[dict]) -> List[dict]:
@@ -161,7 +175,6 @@ def rank_by_similarity(query: str, results: List[dict]) -> List[dict]:
         print("Ranking error:", e)
         return results
 
-# ---------------------------
 # Routes
 
 @app.post("/search")
@@ -327,6 +340,10 @@ async def transcribe(file: UploadFile = File(...)):
 @app.get("/")
 async def root():
     return {"message": "Educational Content Recommender API running ✅"}
+  
+# ---------------------------
+# Pdf transcribe
+# ---------------------------
 
 from fastapi import FastAPI, UploadFile, File
 import os

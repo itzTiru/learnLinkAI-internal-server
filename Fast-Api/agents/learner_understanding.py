@@ -89,9 +89,9 @@ def evaluate_answers(mcqs: List[Dict[str, Any]], answers: Dict[str, Any]) -> Dic
             score += 1
 
     pct = (score / total) if total else 0
-    if pct < 0.2:
+    if pct < 0.3:
         difficulty = "beginner"
-    elif pct < 0.6:
+    elif pct < 0.8:
         difficulty = "intermediate"
     else:
         difficulty = "advanced"

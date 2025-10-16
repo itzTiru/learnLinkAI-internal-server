@@ -356,9 +356,10 @@ async def upload_pdf(file: UploadFile = File(...)):
             os.remove(temp_path)
 
 
-from google import genai
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+import google.generativeai as genai
+
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 class QuestionRequest(BaseModel):
     text: str
     question: str
@@ -369,6 +370,9 @@ async def ask_pdf(request: QuestionRequest):
     User asks a question about the uploaded PDF.
     We feed the full text + question into Gemini for contextual answer.
     """
+    # Use GenerativeModel for generating content
+    model = genai.GenerativeModel("gemini-2.5-flash")
+
     prompt = (
         "You are a helpful assistant for understanding PDFs.\n"
         "Answer the question **based only** on the provided document content.\n"
@@ -377,8 +381,6 @@ async def ask_pdf(request: QuestionRequest):
         f"User Question: {request.question}"
     )
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt
-    )
+    response = model.generate_content(prompt)
+
     return {"answer": response.text.strip()}

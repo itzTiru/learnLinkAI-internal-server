@@ -1,5 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from models.request_models import UserRequest, AnswerSubmission
+import orchestrator
 from pydantic import BaseModel
 from typing import List
 import os
@@ -46,7 +48,7 @@ youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 embedding_model = HuggingFaceEmbeddings(
     model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-# ---------------------------
+
 # Utility Functions
 def clean_text(text: str) -> str:
     """Normalize & clean input text for better embeddings & search"""
@@ -57,14 +59,13 @@ def clean_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text)       # collapse spaces
     return text.strip().lower()
 
-# ---------------------------
 # Models
 class SearchQuery(BaseModel):
     query: str
     max_results: int = 5
     platforms: List[str] = ["youtube", "web"]
 
-# ---------------------------
+
 # External Fetchers
 
 async def fetch_youtube_videos(query: str, max_results: int):
@@ -159,7 +160,6 @@ def rank_by_similarity(query: str, results: List[dict]) -> List[dict]:
         print("Ranking error:", e)
         return results
 
-# ---------------------------
 # Routes
 
 @app.post("/search")
@@ -184,9 +184,7 @@ async def search_content(payload: SearchQuery, db: Session = Depends(get_db)):
 
         ranked = rank_by_similarity(query_clean, results)
 
-        # ---------------------------
         # Upsert into DB
-        # ---------------------------
         for res in ranked[: payload.max_results]:
             existing = db.query(Content).filter(
                 Content.url == res["url"]).first()
@@ -289,7 +287,6 @@ async def ai_info(payload: SearchQuery):
         raise HTTPException(status_code=500, detail=f"AI Info error: {e}")
 
 
-
 @app.post("/transcribe")
 async def transcribe(file: UploadFile = File(...)):
     try:
@@ -320,8 +317,32 @@ async def transcribe(file: UploadFile = File(...)):
 # ---------------------------
 # Health Check
 # ---------------------------
-
-
 @app.get("/")
 async def root():
-    return {"message": "Educational Content Recommender API running ✅"}
+    return {"message": "Educational Content Recommender API running "}
+
+
+
+# ---------------------------
+# Parallel orchestration of 7 agents
+# ---------------------------
+@app.post("/start_session")
+async def start_session(req: UserRequest):
+    result = orchestrator.start_session(req.user_id, req.query)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+@app.post("/submit_answers")
+async def submit_answers(sub: AnswerSubmission):
+    result = orchestrator.submit_answers(sub.session_id, sub.answers)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+@app.get("/session/{session_id}")
+async def get_session(session_id: str):
+    ctx = orchestrator.get_context(session_id)
+    if not ctx:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return ctx

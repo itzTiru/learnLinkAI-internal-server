@@ -339,3 +339,10 @@ app.include_router(personal_router)
 
 from auth import router as auth_router
 app.include_router(auth_router, prefix="/api/auth")
+
+from recommendations import router as recommendation_router
+app.include_router(recommendation_router)
+
+
+from user import router as user_router
+app.include_router(user_router,prefix="/api")

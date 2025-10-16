@@ -346,3 +346,6 @@ app.include_router(recommendation_router)
 
 from user import router as user_router
 app.include_router(user_router,prefix="/api")
+
+from ai_description import router as ai_router
+app.include_router(ai_router)

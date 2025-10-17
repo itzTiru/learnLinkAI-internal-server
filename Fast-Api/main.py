@@ -1,28 +1,28 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 import os
 import asyncio
 import httpx
-from dotenv import load_dotenv
+import re
+import unicodedata
+import torch
 import json
+from fastapi import File, UploadFile
+from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 from database import get_db, Content
 from googleapiclient.discovery import build
-
 from langchain_community.embeddings import HuggingFaceEmbeddings
-import torch
 from sentence_transformers.util import cos_sim
 
-# ---------------------------
-# Bootstrapping & globals
-# ---------------------------
+
 load_dotenv()
 
-app = FastAPI(title="Educational Content Recommender (Fast & Batched)")
+app = FastAPI(title="Educational Content Recommender")
 
-# CORS for Next.js frontend
+#CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "*"],
@@ -31,239 +31,215 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# API keys
+# API Keys
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if not YOUTUBE_API_KEY or not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
-    raise RuntimeError("Missing one or more API keys in .env (YOUTUBE_API_KEY, GOOGLE_API_KEY, GOOGLE_CSE_ID).")
+ASSEMBLY_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 
-# YouTube API client (build once)
+# API URLs
+ASSEMBLY_UPLOAD_URL = "https://api.assemblyai.com/v2/upload"
+ASSEMBLY_TRANSCRIPT_URL = "https://api.assemblyai.com/v2/transcript"
+
+# Clients
 youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+embedding_model = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-# Embeddings (load once; langchain wrapper over sentence-transformers)
-# NOTE: If you want even faster cold-starts, set model_kwargs={"device": "cpu"} explicitly,
-# or "cuda" if you have a GPU: model_kwargs={"device": "cuda"}
-embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+# ---------------------------
+# Utility Functions
+def clean_text(text: str) -> str:
+    """Normalize & clean input text for better embeddings & search"""
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKD", text)
+    text = re.sub(r"[^\w\s]", " ", text)   # remove punctuation
+    text = re.sub(r"\s+", " ", text)       # collapse spaces
+    return text.strip().lower()
 
 # ---------------------------
 # Models
-# ---------------------------
 class SearchQuery(BaseModel):
     query: str
     max_results: int = 5
     platforms: List[str] = ["youtube", "web"]
 
+# ---------------------------
+# External Fetchers
 
-# ---------------------------
-# Agents (Async)
-# ---------------------------
-async def fetch_youtube_videos(query: str, max_results: int) -> List[dict]:
-    """
-    YouTube search (runs request.execute in a thread to avoid blocking the event loop).
-    """
+async def fetch_youtube_videos(query: str, max_results: int):
     try:
-        request = youtube.search().list(
-            part="snippet",
-            q=query,
-            type="video",
-            videoCategoryId="27",  # Education category
-            maxResults=max_results
-        )
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(None, request.execute)
-        items = response.get("items", []) or []
-        return [
-            {
+        search_response = youtube.search().list(
+            q=query, part="id,snippet", maxResults=max_results, type="video"
+        ).execute()
+
+        videos = []
+        for item in search_response.get("items", []):
+            videos.append({
                 "platform": "youtube",
-                "title": it["snippet"]["title"],
-                "description": it["snippet"]["description"],
-                "url": f"https://www.youtube.com/watch?v={it['id']['videoId']}",
-                "thumbnail": it["snippet"]["thumbnails"]["default"]["url"]
-            }
-            for it in items
-        ]
+                "title": item["snippet"]["title"],
+                "description": item["snippet"]["description"],
+                "url": f"https://www.youtube.com/watch?v={item['id']['videoId']}",
+                "thumbnail": item["snippet"]["thumbnails"]["high"]["url"]
+            })
+        return videos
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"YouTube API error: {e}")
-
-
-async def fetch_google_web(query: str, max_results: int) -> List[dict]:
-    """
-    Google Programmable Search (Custom Search API) via httpx.AsyncClient (non-blocking).
-    """
-    try:
-        params = {
-            "key": GOOGLE_API_KEY,
-            "cx": GOOGLE_CSE_ID,
-            "q": query,
-            "num": max_results
-        }
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get("https://www.googleapis.com/customsearch/v1", params=params)
-            resp.raise_for_status()
-            data = resp.json()
-
-        items = data.get("items", []) or []
-        return [
-            {
-                "platform": "web",
-                "title": it.get("title"),
-                "description": it.get("snippet"),
-                "url": it.get("link"),
-                "thumbnail": None
-            }
-            for it in items
-        ]
-    except httpx.HTTPStatusError as e:
-        # Bubble up the actual Google error body to help debugging keys / CSE config
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Google Web Search error: {e}")
-
-
-# ---------------------------
-# Utils (embeddings & ranking)
-# ---------------------------
-def batch_embed_texts(texts: List[str]) -> torch.Tensor:
-    """
-    Use LangChain's HuggingFaceEmbeddings to batch-embed documents and return a torch tensor.
-    """
-    if not texts:
-        return torch.empty((0, 384), dtype=torch.float32)
-    # embed_documents returns List[List[float]]
-    embs = embedding_model.embed_documents(texts)
-    return torch.tensor(embs, dtype=torch.float32)
-
-
-def embed_query(text: str) -> torch.Tensor:
-    """
-    Embed a single query; return as shape (1, D) torch tensor.
-    """
-    q = embedding_model.embed_query(text)
-    return torch.tensor([q], dtype=torch.float32)
-
-
-def rank_by_similarity(query_text: str, items: List[dict]) -> List[dict]:
-    """
-    Use cosine similarity (sentence-transformers.util.cos_sim) to rank items.
-    """
-    if not items:
+        print("YouTube fetch error:", e)
         return []
 
-    texts = [f"{it.get('title','')} {it.get('description','')}".strip() for it in items]
-    doc_embs = batch_embed_texts(texts)  # (N, D)
-    query_emb = embed_query(query_text)  # (1, D)
 
-    # cos_sim -> shape (1, N)
-    sims = cos_sim(query_emb, doc_embs)[0].cpu().tolist()
+async def fetch_google_web(query: str, max_results: int):
+    try:
+        url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={GOOGLE_API_KEY}&cx={GOOGLE_CSE_ID}&num={max_results}"
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+        data = response.json()
 
-    # attach scores
-    for it, s in zip(items, sims):
-        it["similarity_score"] = float(s)
+        results = []
+        for item in data.get("items", []):
+            results.append({
+                "platform": "web",
+                "title": item["title"],
+                "description": item.get("snippet", ""),
+                "url": item["link"],
+                "thumbnail": None
+            })
+        return results
+    except Exception as e:
+        print("Google fetch error:", e)
+        return []
 
-    # sort desc by similarity
-    items.sort(key=lambda x: x["similarity_score"], reverse=True)
-    return items
+
+async def fetch_gemini_answers(query: str):
+    try:
+        headers = {"Content-Type": "application/json",
+                   "Authorization": f"Bearer {GEMINI_API_KEY}"}
+        body = {
+            "contents": [{
+                "parts": [{
+                    "text": f"Provide short, educationally useful answers with references (as URLs) for the following query: {query}"
+                }]
+            }]
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent",
+                headers=headers,
+                json=body,
+            )
+        data = response.json()
+
+        answers = []
+        for cand in data.get("candidates", []):
+            text = cand["content"]["parts"][0]["text"]
+            ref = ""
+            match = re.search(r"https?://\S+", text)
+            if match:
+                ref = match.group(0)
+            answers.append({"answer": text, "reference": ref})
+        return answers
+    except Exception as e:
+        print("Gemini API error:", e)
+        return []
+
+# Ranking
+def rank_by_similarity(query: str, results: List[dict]) -> List[dict]:
+    try:
+        query_emb = embedding_model.embed_query(query)
+        contents = [f"{r['title']} {r['description']}" for r in results]
+        doc_embs = embedding_model.embed_documents(contents)
+        sims = [cos_sim(torch.tensor(query_emb), torch.tensor(doc)).item()
+                for doc in doc_embs]
+        for r, s in zip(results, sims):
+            r["similarity"] = s
+        return sorted(results, key=lambda x: x["similarity"], reverse=True)
+    except Exception as e:
+        print("Ranking error:", e)
+        return results
 
 
-# ---------------------------
-# API Routes
-# ---------------------------
-@app.get("/")
-async def root():
-    return {"message": "Welcome to the Educational Content Recommender API (Fast & Batched)"}
+# Ranking
+def rank_by_similarity(query: str, results: List[dict]) -> List[dict]:
+    try:
+        query_emb = embedding_model.embed_query(query)
+        contents = [f"{r['title']} {r['description']}" for r in results]
+        doc_embs = embedding_model.embed_documents(contents)
+        sims = [cos_sim(torch.tensor(query_emb), torch.tensor(doc)).item()
+                for doc in doc_embs]
+        for r, s in zip(results, sims):
+            r["similarity"] = s
+        return sorted(results, key=lambda x: x["similarity"], reverse=True)
+    except Exception as e:
+        print("Ranking error:", e)
+        return results
 
+# Routes
 
 @app.post("/search")
 async def search_content(payload: SearchQuery, db: Session = Depends(get_db)):
-    """
-    Orchestrates:
-      - YouTube + Web search concurrently
-      - Batched embeddings for ranking
-      - Batched DB upserts (commit once)
-    """
     try:
+        query_clean = clean_text(payload.query)
+        if not query_clean:
+            return {"query": payload.query, "results": []}
+
         tasks = []
         if "youtube" in payload.platforms:
-            tasks.append(fetch_youtube_videos(payload.query, payload.max_results))
+            tasks.append(fetch_youtube_videos(
+                query_clean, payload.max_results))
         if "web" in payload.platforms:
-            tasks.append(fetch_google_web(payload.query, payload.max_results))
+            tasks.append(fetch_google_web(query_clean, payload.max_results))
 
         results_lists = await asyncio.gather(*tasks) if tasks else []
-        results: List[dict] = [item for lst in results_lists for item in (lst or [])]
+        results = [item for lst in results_lists for item in (lst or [])]
 
         if not results:
-            return {
-                "query": payload.query,
-                "counts": {"youtube": 0, "web": 0, "ranked": 0, "stored_new": 0},
-                "results": []
-            }
+            return {"query": payload.query, "results": []}
 
-        # Rank with batched embeddings (fast)
-        ranked = rank_by_similarity(payload.query, results)
+        ranked = rank_by_similarity(query_clean, results)
 
-        # Batch upsert into DB (commit once)
-        existing_urls = {
-            u for (u,) in db.query(Content.url).all()
-        }  # grabs all URLs once; for large tables consider filtering by the small result set
-        to_add = []
-        for it in ranked:
-            if it["url"] in existing_urls:
-                continue
-            # Store the *same* text we embedded above for consistency; recompute quickly here
-            text = f"{it.get('title','')} {it.get('description','')}".strip()
-            emb = embedding_model.embed_query(text)  # single vector is OK for few new rows
-            to_add.append(Content(
-                platform=it.get("platform"),
-                title=it.get("title"),
-                description=it.get("description"),
-                url=it.get("url"),
-                thumbnail=it.get("thumbnail"),
-                embedding=emb
-            ))
+        # ---------------------------
+        # Upsert into DB
+        # ---------------------------
+        for res in ranked[: payload.max_results]:
+            existing = db.query(Content).filter(
+                Content.url == res["url"]).first()
+            if not existing:
+                try:
+                    emb = embedding_model.embed_query(clean_text(
+                        res["title"] + " " + res["description"]))
+                except Exception:
+                    emb = []
+                new_item = Content(
+                    platform=res["platform"],
+                    title=res["title"],
+                    description=res["description"],
+                    url=res["url"],
+                    thumbnail=res.get("thumbnail"),
+                    embedding=json.dumps(emb)
+                )
+                db.add(new_item)
+        db.commit()
 
-        stored_new = 0
-        if to_add:
-            db.add_all(to_add)
-            db.commit()
-            stored_new = len(to_add)
-
-        # Trim to requested top-K for response
-        topk = ranked[: payload.max_results]
-
-        return {
-            "query": payload.query,
-            "counts": {
-                "youtube": sum(1 for r in results if r["platform"] == "youtube"),
-                "web": sum(1 for r in results if r["platform"] == "web"),
-                "ranked": len(ranked),
-                "stored_new": stored_new
-            },
-            "results": topk
-        }
-
-    except HTTPException:
-        raise
+        return {"query": payload.query, "results": ranked[: payload.max_results]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search error: {e}")
-    
 
 
 
-# ---------------------------
 # Gemini API Wrapper
-# ---------------------------
 async def fetch_gemini_answers(query: str) -> list:
     try:
-        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent"
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite-preview-09-2025:generateContent"
         headers = {
             "Content-Type": "application/json",
             "x-goog-api-key": GEMINI_API_KEY
         }
+
         prompt = f"""
         You are an educational assistant. 
-        Provide 9 concise, clear, and helpful answers to this query: "{query}"
+        Provide 6 concise, clear, and helpful answers to this query: "{query}"
 
         Each answer should:
         - Be short (2–3 sentences max)
@@ -277,11 +253,12 @@ async def fetch_gemini_answers(query: str) -> list:
         }
 
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(url, headers=headers, content=json.dumps(payload))
+            resp = await client.post(url, headers=headers, json=payload)  # use 'json=payload'
             resp.raise_for_status()
             data = resp.json()
 
-        text_response = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+        text_response = data.get("candidates", [{}])[0].get(
+            "content", {}).get("parts", [{}])[0].get("text", "")
 
         # Split into multiple answers
         answers = []
@@ -295,15 +272,12 @@ async def fetch_gemini_answers(query: str) -> list:
                 else:
                     answers.append({"answer": line.strip(), "reference": None})
 
-        return answers[:9]
+        return answers[:6]
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gemini fetch error: {e}")
 
 
-# ---------------------------
-# AI Info Endpoint
-# ---------------------------
 @app.post("/aiinfo")
 async def ai_info(payload: SearchQuery):
     try:
@@ -311,25 +285,122 @@ async def ai_info(payload: SearchQuery):
 
         results = []
         for ans in answers:
-            ref =ans.get("reference","")
-            if ref:
-                ref = ref.strip("[]") 
-                if ref.startswith("https:/") and not ref.startswith("https://"):
-                    ref = ref.replace("https:/", "https://", 1)
+            ref = ans.get("reference")
+            if ref and ref.startswith("https:/") and not ref.startswith("https://"):
+                ref = ref.replace("https:/", "https://", 1)
             results.append({
                 "platform": "ai",
                 "title": ans["answer"],
                 "description": ans["answer"],
-                "url": ans["reference"],
+                "url": ref,
                 "thumbnail": None
             })
 
         return {"query": payload.query, "results": results}
 
     except Exception as e:
+        import traceback
+        traceback.print_exc() 
         raise HTTPException(status_code=500, detail=f"AI Info error: {e}")
 
 
+
+@app.post("/transcribe")
+async def transcribe(file: UploadFile = File(...)):
+    try:
+        headers = {"authorization": ASSEMBLY_API_KEY,
+                   "content-type": "application/octet-stream"}
+        async with httpx.AsyncClient() as client:
+            upload_resp = await client.post(ASSEMBLY_UPLOAD_URL, headers=headers, content=await file.read())
+        audio_url = upload_resp.json()["upload_url"]
+
+        transcript_req = {"audio_url": audio_url}
+        async with httpx.AsyncClient() as client:
+            trans_resp = await client.post(ASSEMBLY_TRANSCRIPT_URL, headers={"authorization": ASSEMBLY_API_KEY}, json=transcript_req)
+        transcript_id = trans_resp.json()["id"]
+
+        while True:
+            async with httpx.AsyncClient() as client:
+                poll_resp = await client.get(f"{ASSEMBLY_TRANSCRIPT_URL}/{transcript_id}", headers={"authorization": ASSEMBLY_API_KEY})
+            status = poll_resp.json()["status"]
+            if status == "completed":
+                return {"text": clean_text(poll_resp.json().get("text", ""))}
+            elif status == "error":
+                raise Exception(poll_resp.json()["error"])
+            await asyncio.sleep(3)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Transcription error: {e}")
+
+# ---------------------------
+# Health Check
+# ---------------------------
+
+
+@app.get("/")
+async def root():
+    return {"message": "Educational Content Recommender API running ✅"}
+  
+# ---------------------------
+# Pdf transcribe
+# ---------------------------
+
+from fastapi import FastAPI, UploadFile, File
+import os
+from pdf_utils import extract_text_from_pdf
+from agents.pdf_query import analyze_pdf_text, parse_analysis
+
+@app.post("/upload-pdf/")
+async def upload_pdf(file: UploadFile = File(...)):
+    temp_path = f"temp_{file.filename}"
+    try:
+        content = await file.read()
+        with open(temp_path, "wb") as f:
+            f.write(content)
+
+        text = extract_text_from_pdf(temp_path)
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="No text found in PDF")
+
+        # Analyze large PDF with chunking
+        result = analyze_pdf_text(text)
+        return result
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+
+import google.generativeai as genai
+
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+class QuestionRequest(BaseModel):
+    text: str
+    question: str
+
+@app.post("/ask-pdf/")
+async def ask_pdf(request: QuestionRequest):
+    """
+    User asks a question about the uploaded PDF.
+    We feed the full text + question into Gemini for contextual answer.
+    """
+    # Use GenerativeModel for generating content
+    model = genai.GenerativeModel("gemini-2.5-flash")
+
+    prompt = (
+        "You are a helpful assistant for understanding PDFs.\n"
+        "Answer the question **based only** on the provided document content.\n"
+        "If the answer is not present, say 'The document does not mention this clearly.'\n\n"
+        f"Document Text:\n{request.text[:8000]}\n\n"
+        f"User Question: {request.question}"
+    )
+
+    response = model.generate_content(prompt)
+
+    return {"answer": response.text.strip()}
 #-----------------
 #personal endpoint
 #-----------------

@@ -401,6 +401,7 @@ async def ask_pdf(request: QuestionRequest):
     response = model.generate_content(prompt)
 
     return {"answer": response.text.strip()}
+
 #-----------------
 #personal endpoint
 #-----------------
@@ -420,3 +421,4 @@ app.include_router(user_router,prefix="/api")
 
 from ai_description import router as ai_router
 app.include_router(ai_router)
+

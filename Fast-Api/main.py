@@ -11,6 +11,7 @@ import re
 import unicodedata
 import torch
 import json
+from fastapi import File, UploadFile
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 from database import get_db, Content
@@ -143,6 +144,21 @@ async def fetch_gemini_answers(query: str):
     except Exception as e:
         print("Gemini API error:", e)
         return []
+
+# Ranking
+def rank_by_similarity(query: str, results: List[dict]) -> List[dict]:
+    try:
+        query_emb = embedding_model.embed_query(query)
+        contents = [f"{r['title']} {r['description']}" for r in results]
+        doc_embs = embedding_model.embed_documents(contents)
+        sims = [cos_sim(torch.tensor(query_emb), torch.tensor(doc)).item()
+                for doc in doc_embs]
+        for r, s in zip(results, sims):
+            r["similarity"] = s
+        return sorted(results, key=lambda x: x["similarity"], reverse=True)
+    except Exception as e:
+        print("Ranking error:", e)
+        return results
 
 
 # Ranking
@@ -321,11 +337,7 @@ async def transcribe(file: UploadFile = File(...)):
 async def root():
     return {"message": "Educational Content Recommender API running "}
 
-
-
-# ---------------------------
 # Parallel orchestration of 7 agents
-# ---------------------------
 @app.post("/start_session")
 async def start_session(req: UserRequest):
     result = orchestrator.start_session(req.user_id, req.query)
@@ -346,3 +358,83 @@ async def get_session(session_id: str):
     if not ctx:
         raise HTTPException(status_code=404, detail="Session not found")
     return ctx
+  
+# ---------------------------
+# Pdf transcribe
+# ---------------------------
+
+from fastapi import FastAPI, UploadFile, File
+import os
+from pdf_utils import extract_text_from_pdf
+from agents.pdf_query import analyze_pdf_text, parse_analysis
+
+@app.post("/upload-pdf/")
+async def upload_pdf(file: UploadFile = File(...)):
+    temp_path = f"temp_{file.filename}"
+    try:
+        content = await file.read()
+        with open(temp_path, "wb") as f:
+            f.write(content)
+
+        text = extract_text_from_pdf(temp_path)
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="No text found in PDF")
+
+        # Analyze large PDF with chunking
+        result = analyze_pdf_text(text)
+        return result
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+import google.generativeai as genai
+
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+class QuestionRequest(BaseModel):
+    text: str
+    question: str
+
+@app.post("/ask-pdf/")
+async def ask_pdf(request: QuestionRequest):
+    """
+    User asks a question about the uploaded PDF.
+    We feed the full text + question into Gemini for contextual answer.
+    """
+    # Use GenerativeModel for generating content
+    model = genai.GenerativeModel("gemini-2.5-flash")
+
+    prompt = (
+        "You are a helpful assistant for understanding PDFs.\n"
+        "Answer the question **based only** on the provided document content.\n"
+        "If the answer is not present, say 'The document does not mention this clearly.'\n\n"
+        f"Document Text:\n{request.text[:8000]}\n\n"
+        f"User Question: {request.question}"
+    )
+
+    response = model.generate_content(prompt)
+
+    return {"answer": response.text.strip()}
+
+#-----------------
+#personal endpoint
+#-----------------
+from personal_mongo import router as personal_router
+
+app.include_router(personal_router)
+
+from auth import router as auth_router
+app.include_router(auth_router, prefix="/api/auth")
+
+from recommendations import router as recommendation_router
+app.include_router(recommendation_router)
+
+
+from user import router as user_router
+app.include_router(user_router,prefix="/api")
+
+from ai_description import router as ai_router
+app.include_router(ai_router)
+

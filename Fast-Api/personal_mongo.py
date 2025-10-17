@@ -65,6 +65,7 @@ class PersonalIn(BaseModel):
     education: List[EducationIn] = []
     work: List[WorkIn] = []
     projects: List[ProjectIn] = []  # New: Projects field
+    bookmarks: List[str] = []
 
 class EducationOut(EducationIn):
     id: Optional[str] = None
@@ -80,6 +81,7 @@ class PersonalOut(BaseModel):
     education: List[EducationOut] = []
     work: List[WorkOut] = []
     projects: List[ProjectOut] = []  # New: Projects field
+    bookmarks: List[str] = []
 
     class Config:
         allow_population_by_field_name = True

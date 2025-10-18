@@ -8,7 +8,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-GEMINI_API_KEY='AIzaSyDf7ZeG5iwS8hwSiEDFkfqvQIu4hUQc4QY'
+GEMINI_API_KEY='AIzaSyA1zof-kxXusguStwsomw8HX3mZyXtBXXg'
 
 if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY environment variable is required")

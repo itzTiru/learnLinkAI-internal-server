@@ -438,3 +438,5 @@ app.include_router(user_router,prefix="/api")
 from ai_description import router as ai_router
 app.include_router(ai_router)
 
+from chat import router as chat_router
+app.include_router(chat_router)

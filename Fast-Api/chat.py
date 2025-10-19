@@ -95,7 +95,7 @@ async def chat_endpoint(
     request: ChatRequest,
     user_id: str = Depends(verify_token)
 ):
-    # 🧩 Step 1: Check if educational via Gemini
+
     educational = await is_educational_message(request.message)
     if not educational:
         return ChatResponse(
@@ -103,13 +103,11 @@ async def chat_endpoint(
                      "Please ask something related to learning or academic topics."
         )
 
-    # 🧩 Step 2: Maintain chat history
     if user_id not in chat_history:
         chat_history[user_id] = []
 
     chat_history[user_id].append({"role": "user", "content": request.message})
 
-    # 🧩 Step 3: Build prompt for educational context
     system_prompt = (
         "You are an educational AI assistant for a learning platform. "
         "You should respond clearly and helpfully to questions related to learning, "
@@ -131,7 +129,6 @@ async def chat_endpoint(
         "generationConfig": {"temperature": 0.7}
     }
 
-    # 🧩 Step 4: Send to Gemini for response
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
             f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
@@ -155,7 +152,6 @@ async def chat_endpoint(
     except (KeyError, IndexError):
         raise HTTPException(status_code=500, detail="Failed to parse AI response.")
 
-    # 🧩 Step 5: Save and return
     chat_history[user_id].append({"role": "assistant", "content": content})
     logger.info(f"✅ Educational response generated for user {user_id}")
 

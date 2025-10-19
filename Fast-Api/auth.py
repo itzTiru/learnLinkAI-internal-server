@@ -43,7 +43,8 @@ async def get_or_create_profile(email: str, name: str = None):
             "email": email,
             "age": None,
             "education": [],
-            "work": []
+            "work": [],
+            "bookmarks": []
         }
         await db.personal.insert_one(profile_doc)
         profile = await db.personal.find_one({"email": email})

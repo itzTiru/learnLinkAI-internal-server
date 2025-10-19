@@ -1,11 +1,15 @@
 import google.generativeai as genai
 import os
 from dotenv import load_dotenv
-
+import re
 load_dotenv()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 CHUNK_SIZE = 6000  # characters per chunk
+
+def clean_markdown_bold(text):
+    """Remove Markdown bold markers (**text**) from text"""
+    return re.sub(r'\*\*(.*?)\*\*', r'\1', text)
 
 def analyze_pdf_text(text):
     """
@@ -38,19 +42,19 @@ def analyze_pdf_text(text):
     """
 
     response = model.generate_content(first_prompt)
-    analysis_text = response.text.strip()
+    analysis_text = clean_markdown_bold(response.text.strip())
     parsed = parse_analysis(analysis_text)
     final_summary += parsed["summary"]
 
     # Summarize remaining chunks (if any)
     for chunk in text_chunks[1:]:
         chunk_prompt = f"""
-        You are an AI assistant. Summarize the following PDF text chunk concisely
+        You are an AI assistant. Summarize the following PDF PDF text chunk concisely
         (150–250 words), maintaining context from the previous part of the text:
         {chunk}
         """
         resp = model.generate_content(chunk_prompt)
-        final_summary += "\n\n" + resp.text.strip()
+        final_summary += "\n\n" + clean_markdown_bold(resp.text.strip())
 
     # Compute word count and reading time
     word_count = len(text.split())
@@ -74,13 +78,13 @@ def parse_analysis(analysis_text):
         lines = analysis_text.splitlines()
         for line in lines:
             if line.lower().startswith("keywords"):
-                keywords = line.split(":", 1)[1].strip()
+                keywords = clean_markdown_bold(line.split(":", 1)[1].strip())
             elif line.lower().startswith("difficulty"):
-                difficulty = line.split(":", 1)[1].strip()
+                difficulty = clean_markdown_bold(line.split(":", 1)[1].strip())
             elif line.lower().startswith("search queries"):
-                search_queries = line.split(":", 1)[1].strip()
+                search_queries = clean_markdown_bold(line.split(":", 1)[1].strip())
             elif line.lower().startswith("summary"):
-                summary = line.split(":", 1)[1].strip()
+                summary = clean_markdown_bold(line.split(":", 1)[1].strip())
     except Exception as e:
         print("Error parsing Gemini output:", e)
 

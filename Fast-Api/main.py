@@ -18,6 +18,7 @@ from database import get_db, Content
 from googleapiclient.discovery import build
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from sentence_transformers.util import cos_sim
+import roadmap
 
 
 load_dotenv()
@@ -415,8 +416,9 @@ async def ask_pdf(request: QuestionRequest):
     )
 
     response = model.generate_content(prompt)
-
-    return {"answer": response.text.strip()}
+    clean_answer = re.sub(r'\*\*(.*?)\*\*', r'\1', response.text.strip())
+    return {"answer": clean_answer}
+  
 
 #-----------------
 #personal endpoint
@@ -440,3 +442,15 @@ app.include_router(ai_router)
 
 from chat import router as chat_router
 app.include_router(chat_router)
+
+# Roadmap endpoints
+@app.get("/roadmap/categories")
+async def get_categories():
+    return roadmap.get_categories_endpoint()
+
+@app.post("/roadmap/generate")
+async def generate_roadmap(request: roadmap.RoadmapRequest):
+    return roadmap.generate_roadmap_endpoint(request)
+
+
+# Working 1.0

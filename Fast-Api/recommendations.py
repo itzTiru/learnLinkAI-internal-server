@@ -8,7 +8,8 @@ from dotenv import load_dotenv
 import jwt
 
 from config import db, JWT_SECRET, JWT_ALGORITHM
-from ragents.custom_orchestrator import orchestrate_recommendations
+# from ragents.custom_orchestrator import orchestrate_recommendations
+from xagent.multi_agent_graph import run_a2a_recommendations
 
 load_dotenv()
 
@@ -91,7 +92,7 @@ async def generate_recommendations_for_user(
 ):
     email = current_user
     try:
-        result = await orchestrate_recommendations(email, mode)
+        result = await run_a2a_recommendations(email, mode)
         return result
     except Exception as e:
         print("Error in generate_recommendations_for_user:", str(e))
